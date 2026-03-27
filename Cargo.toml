@@ -16,6 +16,8 @@ path = "src/main.rs"
 
 [dependencies]
 cargo-lock = "10"
+walkdir = "2"
 
 [dev-dependencies]
 goldenfile = "1.7"
+tempfile = "3"

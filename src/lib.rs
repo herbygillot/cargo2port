@@ -1,8 +1,10 @@
 use std::collections::BTreeSet;
 use std::io::{self, Read};
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use cargo_lock::{self, Lockfile, Package};
+use walkdir::WalkDir;
 
 /// Result type with the `cargo2port` crate's [`Error`] type.
 pub type Result<T> = std::result::Result<T, cargo_lock::Error>;
@@ -147,4 +149,78 @@ pub fn format_cargo_crates(packages: Vec<Package>, mode: AlignmentMode) -> Strin
     }
 
     output
+}
+
+/// Find the first Cargo.lock that shares a directory with a Cargo.toml under
+/// the given work directory, searching up to 2 levels deep.
+///
+/// This ensures we find a project root's lockfile rather than a vendored or
+/// nested dependency's lockfile.
+pub fn find_cargo_lock(workpath: &Path) -> Option<PathBuf> {
+    for entry in WalkDir::new(workpath).max_depth(2).into_iter().filter_map(|e| e.ok()) {
+        if entry.file_name() == "Cargo.lock" && entry.path().parent().map_or(false, |p| p.join("Cargo.toml").exists()) {
+            return Some(entry.into_path());
+        }
+    }
+    None
+}
+
+/// Splice a new `cargo.crates` block into a Portfile's contents.
+///
+/// If the Portfile already contains a `cargo.crates` block, it is replaced.
+/// If not, the block is appended to the end, and `appended` is set to true in the return value.
+///
+/// Returns `(new_contents, appended)`.
+pub fn splice_cargo_crates(portfile_contents: &str, cargo_crates_block: &str) -> (String, bool) {
+    let lines: Vec<&str> = portfile_contents.lines().collect();
+
+    // Find the start of the cargo.crates block
+    let block_start = lines.iter().position(|line| {
+        let trimmed = line.trim();
+        trimmed == "cargo.crates" || trimmed.starts_with("cargo.crates \\") || trimmed.starts_with("cargo.crates\t")
+    });
+
+    match block_start {
+        Some(start) => {
+            // Find the end of the block: continuation lines end with '\'
+            let mut end = start;
+            while end < lines.len() && lines[end].ends_with('\\') {
+                end += 1;
+            }
+            // `end` is now the last line of the block (the one without trailing \)
+
+            let mut output = String::new();
+
+            // Everything before the block
+            for line in &lines[..start] {
+                output.push_str(line);
+                output.push('\n');
+            }
+
+            // The new block
+            output.push_str(cargo_crates_block);
+            output.push('\n');
+
+            // Everything after the block
+            if end + 1 < lines.len() {
+                for line in &lines[end + 1..] {
+                    output.push_str(line);
+                    output.push('\n');
+                }
+            }
+
+            (output, false)
+        }
+        None => {
+            // No existing block — append
+            let mut output = portfile_contents.to_string();
+            if !output.ends_with('\n') {
+                output.push('\n');
+            }
+            output.push('\n');
+            output.push_str(cargo_crates_block);
+            output.push('\n');
+            (output, true)
+        }
+    }
 }
