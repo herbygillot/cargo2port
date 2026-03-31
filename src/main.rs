@@ -1,4 +1,5 @@
 use std::env;
+use std::fs;
 use std::path::Path;
 use std::process;
 
@@ -6,14 +7,16 @@ use cargo_lock::{Lockfile, Package};
 
 use cargo2port::{
     format_cargo_crates, lockfile_from_path, lockfile_from_stdin, resolve_lockfile_packages,
-    AlignmentMode, Result,
+    splice_cargo_crates, AlignmentMode, Result,
 };
 
 fn main() {
     let mut mode = AlignmentMode::Normal;
     let mut files: Vec<String> = vec![];
+    let mut portfile_path: Option<String> = None;
+    let mut args = env::args().skip(1);
 
-    for arg in env::args().skip(1) {
+    while let Some(arg) = args.next() {
         match &arg[..] {
             "" => continue,
             "--help" => print_usage(0),
@@ -22,6 +25,12 @@ fn main() {
             "--align=maxlen" => mode = AlignmentMode::Maxlen,
             "--align=multiline" => mode = AlignmentMode::Multiline,
             "--align=justify" => mode = AlignmentMode::Justify,
+            "-P" | "--portfile" => {
+                portfile_path = Some(args.next().unwrap_or_else(|| {
+                    eprintln!("Error: -P requires a path to a Portfile");
+                    process::exit(1);
+                }));
+            }
             _ => match check_path(&arg[..]) {
                 Some(path) => files.push(path),
                 None => process::exit(1),
@@ -40,13 +49,50 @@ fn main() {
                 process::exit(0);
             }
 
-            println!("{}", format_cargo_crates(packages, mode));
+            let block = format_cargo_crates(packages, mode);
+
+            match portfile_path {
+                Some(ref path) => update_portfile(path, &block),
+                None => println!("{}", block),
+            }
         }
         Err(error) => {
             eprintln!("{}", error);
             process::exit(1)
         }
     }
+}
+
+fn update_portfile(path: &str, cargo_crates_block: &str) {
+    let portfile_path = Path::new(path);
+
+    let contents = fs::read_to_string(portfile_path).unwrap_or_else(|e| {
+        eprintln!("Error reading Portfile '{}': {}", path, e);
+        process::exit(1);
+    });
+
+    let updated = splice_cargo_crates(&contents, cargo_crates_block).unwrap_or_else(|| {
+        eprintln!("Error: no cargo.crates block found in '{}'", path);
+        process::exit(1);
+    });
+
+    // Write to a temporary file in the same directory, then rename into place
+    // so the Portfile is never left in a partially-written state.
+    let dir = portfile_path.parent().unwrap_or(Path::new("."));
+    let tmp_path = dir.join(".Portfile.cargo2port.tmp");
+
+    fs::write(&tmp_path, &updated).unwrap_or_else(|e| {
+        eprintln!("Error writing temporary file '{}': {}", tmp_path.display(), e);
+        process::exit(1);
+    });
+
+    fs::rename(&tmp_path, portfile_path).unwrap_or_else(|e| {
+        let _ = fs::remove_file(&tmp_path);
+        eprintln!("Error replacing Portfile '{}': {}", path, e);
+        process::exit(1);
+    });
+
+    eprintln!("Updated {}", path);
 }
 
 fn check_path(arg: &str) -> Option<String> {
@@ -102,7 +148,15 @@ fn read_packages_from_lockfiles(files: &Vec<String>) -> Result<Vec<Package>> {
 fn print_usage(code: i32) {
     let arg0 = env::args().next().unwrap_or("cargo2port".to_owned());
     eprintln!(
-        "Usage: {} [--align=maxlen|multiline|justify] <path/to/Cargo.lock>...",
+        "Usage: {} [options] <path/to/Cargo.lock>...
+
+Generate a cargo.crates block for a MacPorts Portfile from one or more
+Cargo.lock files. By default the block is printed to stdout.
+
+Options:
+  -h, --help                            Print this help message
+  --align=maxlen|multiline|justify      Set alignment mode
+  -P, --portfile <path>                 Update the cargo.crates block in <path> in place",
         arg0
     );
     process::exit(code);

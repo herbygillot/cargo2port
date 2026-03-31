@@ -148,3 +148,64 @@ pub fn format_cargo_crates(packages: Vec<Package>, mode: AlignmentMode) -> Strin
 
     output
 }
+
+/// Splice a new `cargo.crates` block into a Portfile's contents,
+/// replacing the existing block.
+///
+/// Returns `None` if no existing `cargo.crates` block is found.
+pub fn splice_cargo_crates(portfile_contents: &str, cargo_crates_block: &str) -> Option<String> {
+    let lines: Vec<&str> = portfile_contents.lines().collect();
+
+    // Find the start of the cargo.crates block.
+    // Matches "cargo.crates" optionally followed by whitespace and a backslash.
+    let start = lines.iter().position(|line| {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("cargo.crates") {
+            return false;
+        }
+        let rest = trimmed["cargo.crates".len()..].trim();
+        rest.is_empty() || rest == "\\"
+    })?;
+
+    // Find the end of the block: continuation lines end with '\'
+    let mut end = start;
+    while end < lines.len() && lines[end].ends_with('\\') {
+        end += 1;
+    }
+    // `end` is now the last line of the block (the one without trailing \)
+
+    let mut output = String::new();
+
+    // Everything before the block
+    for line in &lines[..start] {
+        output.push_str(line);
+        output.push('\n');
+    }
+
+    // Match the indentation of the original cargo.crates line
+    let original_line = lines[start];
+    let content_start = original_line.len() - original_line.trim_start().len();
+    let indent = &original_line[..content_start];
+
+    // The new block, with original indentation applied
+    for (i, line) in cargo_crates_block.lines().enumerate() {
+        if i > 0 {
+            output.push('\n');
+        }
+        if !line.is_empty() {
+            output.push_str(indent);
+        }
+        output.push_str(line);
+    }
+    output.push('\n');
+
+    // Everything after the block
+    if end + 1 < lines.len() {
+        for line in &lines[end + 1..] {
+            output.push_str(line);
+            output.push('\n');
+        }
+    }
+
+    Some(output)
+}
